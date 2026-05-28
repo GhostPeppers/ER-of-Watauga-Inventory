@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ER Med Tracker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #f1f5f9; min-height: 100vh; }
+  input, select, textarea { width: 100%; background: #1e293b; border: 1px solid #334155; border-radius: 8px; color: #f1f5f9; padding: 10px 12px; font-size: 14px; outline: none; color-scheme: dark; font-family: inherit; }
+  input::placeholder, textarea::placeholder { color: #475569; }
+  textarea { resize: vertical; }
+  select option { background: #1e293b; }
+  button { cursor: pointer; font-family: inherit; }
+  label { font-size: 12px; color: #94a3b8; display: block; margin-bottom: 5px; font-weight: 600; }
+  .field { margin-bottom: 14px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  #scanner-overlay { display: none; position: fixed; inset: 0; background: #000; z-index: 100; flex-direction: column; }
+  #scanner-overlay.active { display: flex; }
+  #video { width: 100%; height: 100%; object-fit: cover; }
+  .viewfinder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  .vf-box { width: 260px; height: 160px; position: relative; }
+  .corner { position: absolute; width: 28px; height: 28px; }
+  .corner.tl { top:0; left:0; border-top: 3px solid #ef4444; border-left: 3px solid #ef4444; }
+  .corner.tr { top:0; right:0; border-top: 3px solid #ef4444; border-right: 3px solid #ef4444; }
+  .corner.bl { bottom:0; left:0; border-bottom: 3px solid #ef4444; border-left: 3px solid #ef4444; }
+  .corner.br { bottom:0; right:0; border-bottom: 3px solid #ef4444; border-right: 3px solid #ef4444; }
+  .corner.detected { border-color: #22c55e !important; }
+  #scan-hint { position: absolute; bottom: 40px; left: 0; right: 0; display: flex; justify-content: center; }
+  #scan-hint span { background: rgba(0,0,0,0.75); border-radius: 20px; padding: 8px 20px; color: #94a3b8; font-size: 13px; font-weight: 600; }
+  .card { background: #1e293b; border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; border-left: 4px solid #334155; border: 1px solid #334155; }
+  .mckesson-num { font-size: 12px; color: #60a5fa; font-weight: 700; margin-bottom: 3px; }
+  .meta { font-size: 11px; color: #64748b; margin-bottom: 6px; }
+  .badge { border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; white-space: nowrap; border: 1px solid; display: inline-block; }
+  .status-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sub { font-size: 11px; color: #475569; margin-top: 4px; }
+  .notes-text { font-size: 11px; color: #64748b; margin-top: 4px; font-style: italic; }
+  .btn-edit { background: #334155; border: none; color: #94a3b8; border-radius: 6px; padding: 5px 8px; font-size: 11px; }
+  .btn-del { background: #450a0a; border: none; color: #f87171; border-radius: 6px; padding: 5px 8px; font-size: 11px; }
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+  .summary-card { background: #1e293b; border: 2px solid #334155; border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+  .summary-num { font-size: 22px; font-weight: 800; }
+  .summary-lbl { font-size: 11px; color: #64748b; font-weight: 600; margin-top: 2px; }
+  #scan-banner { display: none; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; line-height: 1.5; }
+  #filter-pill { display: none; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .pill-lbl { font-size: 12px; color: #94a3b8; }
+  #clear-filter { background: none; border: none; color: #64748b; font-size: 12px; padding: 0; }
+  #scanner-error { display: none; flex-direction: column; align-items: center; justify-content: center; flex: 1; padding: 24px; gap: 16px; }
+  #scanner-error-msg { color: #f87171; text-align: center; font-size: 14px; line-height: 1.6; white-space: pre-line; }
+  #scanner-video-wrap { flex: 1; position: relative; }
+</style>
+</head>
+<body>
+
+<!-- Scanner Overlay -->
+<div id="scanner-overlay">
+  <div style="background:#1e293b;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+    <span style="font-weight:700;color:#f8fafc;font-size:15px">📷 Scan Barcode</span>
+    <button onclick="closeScanner()" style="background:#334155;color:#94a3b8;border:none;border-radius:8px;padding:6px 14px;font-size:13px">Cancel</button>
+  </div>
+  <div id="scanner-error">
+    <div style="font-size:36px">📵</div>
+    <div id="scanner-error-msg"></div>
+    <button onclick="closeScanner()" style="background:#ef4444;color:white;border:none;border-radius:10px;padding:12px 24px;font-size:14px;font-weight:700">Use Manual Entry</button>
+  </div>
+  <div id="scanner-video-wrap">
+    <video id="video" playsinline muted></video>
+    <div class="viewfinder">
+      <div class="vf-box">
+        <div class="corner tl" id="c1"></div>
+        <div class="corner tr" id="c2"></div>
+        <div class="corner bl" id="c3"></div>
+        <div class="corner br" id="c4"></div>
+      </div>
+    </div>
+    <div id="scan-hint"><span id="hint-text">Point camera at barcode</span></div>
+  </div>
+</div>
+
+<!-- Header -->
+<div style="background:#1e293b;border-bottom:1px solid #334155;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10">
+  <div>
+    <div style="font-weight:800;font-size:16px;color:#f8fafc">🏥 ER Med Tracker</div>
+    <div id="item-count" style="font-size:11px;color:#94a3b8;margin-top:1px">0 items logged</div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button id="export-btn" onclick="exportCSV()" style="display:none;background:#334155;color:#94a3b8;border:none;border-radius:8px;padding:7px 12px;font-size:12px">Export CSV</button>
+    <button onclick="showAddForm()" style="background:#ef4444;color:white;border:none;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:700">+ Add</button>
+  </div>
+</div>
+
+<!-- List View -->
+<div id="list-view" style="padding:16px;max-width:480px;margin:0 auto">
+  <div id="summary-grid" class="summary-grid" style="display:none"></div>
+  <input id="search-input" type="text" placeholder="Search name, location, or McKesson #..." oninput="renderList()" style="display:none;margin-bottom:12px">
+  <div id="filter-pill">
+    <span class="pill-lbl">Filtered:</span>
+    <span id="filter-badge" class="badge"></span>
+    <button id="clear-filter" onclick="clearFilter()">✕ Clear</button>
+  </div>
+  <div id="med-list"></div>
+</div>
+
+<!-- Add/Edit Form -->
+<div id="add-view" style="display:none;padding:16px;max-width:480px;margin:0 auto">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+    <button onclick="showList()" style="background:#334155;color:#94a3b8;border:none;border-radius:8px;padding:6px 12px;font-size:13px">← Back</button>
+    <div id="form-title" style="font-weight:700;font-size:15px">Log New Item</div>
+  </div>
+
+  <button id="scan-btn" onclick="openScanner()" style="width:100%;background:#1d4ed8;color:white;border:none;border-radius:10px;padding:13px;font-size:14px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;justify-content:center;gap:8px">
+    📷 Scan Barcode
+  </button>
+
+  <div id="scan-banner"></div>
+
+  <div class="field">
+    <label>Medication / Supply Name *</label>
+    <input type="text" id="f-name" placeholder="e.g. Epinephrine 1mg/mL">
+  </div>
+
+  <div class="grid2">
+    <div>
+      <label>McKesson Item #</label>
+      <input type="text" id="f-mckesson" placeholder="e.g. 123456">
+    </div>
+    <div>
+      <label>NDC</label>
+      <input type="text" id="f-ndc" placeholder="auto-filled">
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <label>Expiration Date *</label>
+      <input type="date" id="f-expdate">
+    </div>
+    <div>
+      <label>Lot Number</label>
+      <input type="text" id="f-lot" placeholder="auto-filled">
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Location / Bin</label>
+    <input type="text" id="f-location" placeholder="e.g. Crash Cart A, Bin 3">
+  </div>
+
+  <div class="grid2">
+    <div>
+      <label>Quantity</label>
+      <input type="number" id="f-qty">
+    </div>
+    <div>
+      <label>Unit</label>
+      <select id="f-unit">
+        <option>units</option><option>vials</option><option>boxes</option>
+        <option>bags</option><option>each</option><option>mg</option><option>mL</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Category</label>
+    <select id="f-category">
+      <option>Medications</option><option>IV Supplies</option><option>Fluids</option>
+      <option>Airway/Respiratory</option><option>Wound Care</option><option>PPE</option>
+      <option>Ortho/Mobility</option><option>Diagnostics</option><option>Cardiac</option>
+      <option>Lab/Specimen</option><option>Syringes/Needles</option><option>Other</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label>Notes</label>
+    <textarea id="f-notes" rows="2" placeholder="e.g. entire bin expired, 12 vials pulled"></textarea>
+  </div>
+
+  <button id="save-btn" onclick="saveItem()" style="width:100%;background:#ef4444;color:white;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:700;margin-bottom:32px">
+    Log Item
+  </button>
+</div>
+
+<script>
+const STATUS = {
+  EXPIRED: { label:"EXPIRED", color:"#ef4444", bg:"#fef2f2", priority:0 },
+  CRITICAL: { label:"< 30 days", color:"#f97316", bg:"#fff7ed", priority:1 },
+  WARNING:  { label:"30–90 days", color:"#eab308", bg:"#fefce8", priority:2 },
+  OK:       { label:"OK", color:"#22c55e", bg:"#f0fdf4", priority:3 },
+};
+
+let meds = [];
+let editId = null;
+let activeFilter = "ALL";
+let scanStream = null;
+let scanAnimFrame = null;
+let scanStopped = false;
+
+function getStatus(d) {
+  if (!d) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const diff = Math.floor((new Date(d) - today) / 86400000);
+  if (diff < 0) return "EXPIRED";
+  if (diff < 30) return "CRITICAL";
+  if (diff < 90) return "WARNING";
+  return "OK";
+}
+
+function daysUntil(d) {
+  if (!d) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  return Math.floor((new Date(d) - today) / 86400000);
+}
+
+function parseGS1(raw) {
+  const GS = String.fromCharCode(29);
+  let s = raw.replace(/[^\x00-\x7F]/g,"").replace(/\u001d/g, GS).replace(/^\][a-zA-Z][0-9]/,'');
+  const res = { ndc:null, expDate:null, lotNumber:null, gtin:null };
+  let i = 0;
+  while (i < s.length) {
+    const rem = s.slice(i);
+    if (rem.startsWith('01') && rem.length >= 16) {
+      res.gtin = rem.slice(2,16);
+      res.ndc = res.gtin.slice(1,11).replace(/^0+/,'');
+      i += 16;
+    } else if (rem.startsWith('11') && rem.length >= 8) { i += 8; }
+    else if (rem.startsWith('17') && rem.length >= 8) {
+      const yy=rem.slice(2,4), mm=rem.slice(4,6), dd=rem.slice(6,8);
+      const day = dd==='00'?'01':dd.padStart(2,'0');
+      res.expDate = `${2000+parseInt(yy)}-${mm.padStart(2,'0')}-${day}`;
+      i += 8;
+    } else if (rem.startsWith('10')) {
+      i += 2; let lot='';
+      while (i < s.length && s[i] !== GS && !/^(01|17|21|10|11)/.test(s.slice(i))) { lot += s[i]; i++; }
+      if (s[i] === GS) i++;
+      res.lotNumber = lot;
+    } else if (rem.startsWith('21')) {
+      i += 2;
+      while (i < s.length && s[i] !== GS && !/^(01|17|10|11)/.test(s.slice(i))) i++;
+      if (s[i] === GS) i++;
+    } else { i++; }
+  }
+  return res;
+}
+
+async function lookupNDC(ndc) {
+  if (!ndc) return null;
+  const variants = [ndc];
+  if (ndc.length === 9) variants.push(`${ndc.slice(0,5)}-${ndc.slice(5,9)}`);
+  if (ndc.length === 10) variants.push(`${ndc.slice(0,5)}-${ndc.slice(5,9)}-${ndc.slice(9,11)}`);
+  for (const v of variants) {
+    try {
+      const res = await fetch(`https://api.fda.gov/drug/ndc.json?search=product_ndc:"${v}"&limit=1`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.results?.[0]) {
+        const r = data.results[0];
+        const name = [r.brand_name||r.generic_name, r.active_ingredients?.[0]?.strength, r.dosage_form].filter(Boolean).join(' ').trim();
+        return { name, ndc: v };
+      }
+    } catch {}
+  }
+  return null;
+}
+
+// ---- Scanner ----
+function openScanner() {
+  scanStopped = false;
+  document.getElementById('scanner-overlay').classList.add('active');
+  document.getElementById('scanner-error').style.display = 'none';
+  document.getElementById('scanner-video-wrap').style.display = 'block';
+  document.getElementById('hint-text').textContent = 'Point camera at barcode';
+  ['c1','c2','c3','c4'].forEach(id => document.getElementById(id).classList.remove('detected'));
+
+  navigator.mediaDevices.getUserMedia({ video: { facingMode:"environment", width:{ideal:1280}, height:{ideal:720} } })
+    .then(stream => {
+      scanStream = stream;
+      const video = document.getElementById('video');
+      video.srcObject = stream;
+      video.play();
+
+      if (!('BarcodeDetector' in window)) {
+        showScanError("Barcode scanning not supported in this browser.\nPlease use Chrome on Android.");
+        return;
+      }
+
+      const detector = new BarcodeDetector({ formats:['data_matrix','pdf417','code_128','code_39','ean_13','ean_8','upc_a','upc_e','qr_code'] });
+
+      const scan = async () => {
+        if (scanStopped) return;
+        try {
+          const video = document.getElementById('video');
+          if (video.readyState === 4) {
+            const codes = await detector.detect(video);
+            if (codes.length > 0) {
+              scanStopped = true;
+              ['c1','c2','c3','c4'].forEach(id => document.getElementById(id).classList.add('detected'));
+              document.getElementById('hint-text').textContent = '✓ Got it!';
+              document.getElementById('hint-text').style.color = '#22c55e';
+              setTimeout(() => handleScanResult(codes[0].rawValue), 400);
+              return;
+            }
+          }
+        } catch {}
+        scanAnimFrame = requestAnimationFrame(scan);
+      };
+      scan();
+    })
+    .catch(() => showScanError("Camera access denied.\n\nIn Chrome: tap the lock icon in the address bar → Camera → Allow, then try again."));
+}
+
+function showScanError(msg) {
+  document.getElementById('scanner-video-wrap').style.display = 'none';
+  const err = document.getElementById('scanner-error');
+  err.style.display = 'flex';
+  document.getElementById('scanner-error-msg').textContent = msg;
+}
+
+function closeScanner() {
+  scanStopped = true;
+  cancelAnimationFrame(scanAnimFrame);
+  if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+  document.getElementById('scanner-overlay').classList.remove('active');
+}
+
+async function handleScanResult(raw) {
+  closeScanner();
+  showBanner('loading', '🔍 Looking up drug in FDA database...');
+  const parsed = parseGS1(raw);
+  if (parsed.expDate) document.getElementById('f-expdate').value = parsed.expDate;
+  if (parsed.lotNumber) document.getElementById('f-lot').value = parsed.lotNumber;
+  if (parsed.ndc) document.getElementById('f-ndc').value = parsed.ndc;
+
+  if (parsed.ndc) {
+    const drug = await lookupNDC(parsed.ndc);
+    if (drug) {
+      document.getElementById('f-name').value = drug.name;
+      document.getElementById('f-ndc').value = drug.ndc;
+      showBanner('found', '✅ Drug name auto-filled. Enter McKesson item # manually.');
+    } else {
+      showBanner('partial', '⚠️ Expiry/lot filled from barcode. Drug name not found — type it in. Enter McKesson item # manually.');
+    }
+  } else {
+    showBanner(parsed.expDate ? 'partial' : 'notfound', parsed.expDate ? '⚠️ Partial data from barcode. Check fields and fill in the rest.' : '❓ Barcode scanned but no data extracted. Enter details manually.');
+  }
+}
+
+function showBanner(type, msg) {
+  const b = document.getElementById('scan-banner');
+  const styles = {
+    loading: { bg:'#1e293b', border:'#334155', color:'#94a3b8' },
+    found:   { bg:'#052e16', border:'#22c55e', color:'#86efac' },
+    partial: { bg:'#1c1917', border:'#78716c', color:'#d6d3d1' },
+    notfound:{ bg:'#1c1917', border:'#78716c', color:'#d6d3d1' },
+  };
+  const s = styles[type];
+  b.style.cssText = `display:block;background:${s.bg};border:1px solid ${s.border};color:${s.color};border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;line-height:1.5`;
+  b.textContent = msg;
+  if (type !== 'loading') setTimeout(() => { b.style.display = 'none'; }, 6000);
+}
+
+// ---- Views ----
+function showList() {
+  document.getElementById('list-view').style.display = 'block';
+  document.getElementById('add-view').style.display = 'none';
+  editId = null;
+  renderList();
+}
+
+function showAddForm(med) {
+  document.getElementById('list-view').style.display = 'none';
+  document.getElementById('add-view').style.display = 'block';
+  document.getElementById('scan-banner').style.display = 'none';
+
+  if (med) {
+    editId = med.id;
+    document.getElementById('form-title').textContent = 'Edit Item';
+    document.getElementById('scan-btn').style.display = 'none';
+    document.getElementById('save-btn').textContent = 'Save Changes';
+    document.getElementById('f-name').value = med.name||'';
+    document.getElementById('f-mckesson').value = med.mckessonItem||'';
+    document.getElementById('f-ndc').value = med.ndc||'';
+    document.getElementById('f-expdate').value = med.expDate||'';
+    document.getElementById('f-lot').value = med.lotNumber||'';
+    document.getElementById('f-location').value = med.location||'';
+    document.getElementById('f-qty').value = med.qty||'';
+    document.getElementById('f-unit').value = med.unit||'units';
+    document.getElementById('f-category').value = med.category||'Other';
+    document.getElementById('f-notes').value = med.notes||'';
+  } else {
+    editId = null;
+    document.getElementById('form-title').textContent = 'Log New Item';
+    document.getElementById('scan-btn').style.display = 'flex';
+    document.getElementById('save-btn').textContent = 'Log Item';
+    ['f-name','f-mckesson','f-ndc','f-expdate','f-lot','f-location','f-qty','f-notes'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('f-unit').value = 'units';
+    document.getElementById('f-category').value = 'Other';
+  }
+}
+
+function saveItem() {
+  const name = document.getElementById('f-name').value.trim();
+  const expDate = document.getElementById('f-expdate').value;
+  if (!name || !expDate) { alert('Name and expiration date are required.'); return; }
+
+  const item = {
+    id: editId || Date.now(),
+    name, expDate,
+    mckessonItem: document.getElementById('f-mckesson').value.trim(),
+    ndc: document.getElementById('f-ndc').value.trim(),
+    lotNumber: document.getElementById('f-lot').value.trim(),
+    location: document.getElementById('f-location').value.trim(),
+    qty: document.getElementById('f-qty').value.trim(),
+    unit: document.getElementById('f-unit').value,
+    category: document.getElementById('f-category').value,
+    notes: document.getElementById('f-notes').value.trim(),
+  };
+
+  if (editId) { meds = meds.map(m => m.id === editId ? item : m); }
+  else { meds.push(item); }
+
+  showList();
+}
+
+function deleteItem(id) {
+  meds = meds.filter(m => m.id !== id);
+  renderList();
+}
+
+function clearFilter() { activeFilter = "ALL"; renderList(); }
+
+function renderList() {
+  const search = (document.getElementById('search-input').value || '').toLowerCase();
+  const counts = { EXPIRED:0, CRITICAL:0, WARNING:0, OK:0 };
+  meds.forEach(m => { const s = getStatus(m.expDate); if (s) counts[s]++; });
+
+  // Header count
+  document.getElementById('item-count').textContent = `${meds.length} item${meds.length !== 1 ? 's' : ''} logged`;
+  document.getElementById('export-btn').style.display = meds.length ? 'block' : 'none';
+
+  // Summary grid
+  const sg = document.getElementById('summary-grid');
+  sg.style.display = meds.length ? 'grid' : 'none';
+  sg.innerHTML = Object.entries(counts).map(([key,count]) => {
+    const s = STATUS[key];
+    const active = activeFilter === key;
+    return `<div class="summary-card" onclick="activeFilter='${active?'ALL':key}';renderList()"
+      style="background:${active?s.bg:'#1e293b'};border-color:${active?s.color:'#334155'}">
+      <div class="summary-num" style="color:${s.color}">${count}</div>
+      <div class="summary-lbl" style="color:${active?s.color:'#64748b'}">${s.label}</div>
+    </div>`;
+  }).join('');
+
+  // Search
+  const si = document.getElementById('search-input');
+  si.style.display = meds.length ? 'block' : 'none';
+
+  // Filter pill
+  const fp = document.getElementById('filter-pill');
+  if (activeFilter !== 'ALL') {
+    fp.style.display = 'flex';
+    const s = STATUS[activeFilter];
+    document.getElementById('filter-badge').textContent = s.label;
+    document.getElementById('filter-badge').style.cssText = `background:${s.bg};color:${s.color};border-color:${s.color};border-radius:6px;padding:2px 10px;font-size:12px;font-weight:700`;
+  } else { fp.style.display = 'none'; }
+
+  // Filter + sort
+  const filtered = meds
+    .filter(m => {
+      const s = getStatus(m.expDate);
+      if (activeFilter !== 'ALL' && s !== activeFilter) return false;
+      if (search && !m.name.toLowerCase().includes(search) && !m.location.toLowerCase().includes(search) && !m.mckessonItem.toLowerCase().includes(search)) return false;
+      return true;
+    })
+    .sort((a,b) => {
+      const pa = STATUS[getStatus(a.expDate)]?.priority ?? 99;
+      const pb = STATUS[getStatus(b.expDate)]?.priority ?? 99;
+      return pa !== pb ? pa - pb : new Date(a.expDate) - new Date(b.expDate);
+    });
+
+  const list = document.getElementById('med-list');
+  if (meds.length === 0) {
+    list.innerHTML = `<div style="text-align:center;padding:60px 20px;color:#475569">
+      <div style="font-size:40px;margin-bottom:12px">💊</div>
+      <div style="font-weight:700;font-size:16px;margin-bottom:6px;color:#64748b">No items logged yet</div>
+      <div style="font-size:13px">Tap + Add, then scan a barcode or enter manually</div>
+    </div>`;
+  } else if (filtered.length === 0) {
+    list.innerHTML = `<div style="text-align:center;padding:40px 20px;color:#475569;font-size:13px">No items match.</div>`;
+  } else {
+    list.innerHTML = filtered.map(med => {
+      const status = getStatus(med.expDate);
+      const days = daysUntil(med.expDate);
+      const s = status ? STATUS[status] : null;
+      const borderColor = s ? s.color : '#334155';
+      const daysStr = days !== null ? (days < 0 ? ` (${Math.abs(days)}d ago)` : ` (${days}d)`) : '';
+      const badge = s ? `<span class="badge" style="background:${s.bg};color:${s.color};border-color:${s.color}">${s.label}</span>` : '';
+      return `<div class="card" style="border-left-color:${borderColor};border-color:${borderColor}44;border-left:4px solid ${borderColor}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:14px;color:#f8fafc;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(med.name)}</div>
+            ${med.mckessonItem ? `<div class="mckesson-num">McKesson # ${esc(med.mckessonItem)}</div>` : ''}
+            <div class="meta">${esc(med.category)}${med.location?' · '+esc(med.location):''}${med.qty?' · '+esc(med.qty)+' '+esc(med.unit):''}</div>
+            <div class="status-row">${badge}<span style="font-size:11px;color:#94a3b8">Exp: ${med.expDate}${daysStr}</span></div>
+            <div style="display:flex;gap:12px;margin-top:4px;flex-wrap:wrap">
+              ${med.lotNumber?`<span class="sub">Lot: ${esc(med.lotNumber)}</span>`:''}
+              ${med.ndc?`<span class="sub">NDC: ${esc(med.ndc)}</span>`:''}
+            </div>
+            ${med.notes?`<div class="notes-text">${esc(med.notes)}</div>`:''}
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button class="btn-edit" onclick='editItem(${med.id})'>Edit</button>
+            <button class="btn-del" onclick='deleteItem(${med.id})'>✕</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+}
+
+function editItem(id) {
+  const med = meds.find(m => m.id === id);
+  if (med) showAddForm(med);
+}
+
+function esc(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function exportCSV() {
+  const header = ["Name","McKesson Item #","NDC","Category","Qty","Unit","Exp Date","Days Until Exp","Status","Location","Lot #","Notes"];
+  const rows = meds.map(m => {
+    const s = getStatus(m.expDate); const d = daysUntil(m.expDate);
+    return [m.name, m.mckessonItem, m.ndc, m.category, m.qty, m.unit, m.expDate,
+      d!==null?(d<0?`${Math.abs(d)} days ago`:`${d} days`):"",
+      s?STATUS[s].label:"", m.location, m.lotNumber, m.notes];
+  });
+  const csv = [header,...rows].map(r=>r.map(v=>`"${String(v||"").replace(/"/g,'""')}"`).join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download = `ER_Meds_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+// Init
+renderList();
+</script>
+</body>
+</html>
